@@ -1,122 +1,121 @@
 import numpy as np
 import scipy.stats as stats
-from scipy.stats import norm, uniform, chi2
-import pandas as pd
-from scipy.optimize import minimize
-
-np.random.seed(1)
-
-# Таблица критических значений хи-квадрат
-chi2_table = {
-    1: 3.841,  # Для alpha=0.05 и df=1
-    2: 5.991,  # Для alpha=0.05 и df=2
-    3: 7.815,  # Для alpha=0.05 и df=3
-    4: 9.488,  # Для alpha=0.05 и df=4
-    5: 11.070  # Для alpha=0.05 и df=5
-}
 
 
-def estimate_mle_normal(sample):
-    def neg_log_likelihood(params):
-        mu, sigma = params
-        return -np.sum(norm.logpdf(sample, loc=mu, scale=sigma))
+class NormalDistributionTest:
+    def __init__(self):
+        self.alpha = 0.05
 
-    initial_mu = np.mean(sample)
-    initial_sigma = np.std(sample)
-    result = minimize(neg_log_likelihood, [initial_mu, initial_sigma],
-                      bounds=((None, None), (1e-6, None)))
-    return result.x[0], result.x[1]
+    def generate_sample(self, size, dist_type='normal'):
+        """Генерация выборки заданного типа"""
+        if dist_type == 'normal':
+            return np.random.standard_normal(size=size)
+        elif dist_type == 'uniform':
+            return np.random.uniform(-np.sqrt(3), np.sqrt(3), size=size)
+
+    def estimate_parameters(self, sample):
+        """Оценка параметров методом максимального правдоподобия"""
+        mu = np.mean(sample)
+        sigma = np.std(sample, ddof=0)  # Для ММП используем несмещенную оценку
+        return mu, sigma
+
+    def chi2_test(self, sample, mu, sigma):
+        """Критерий согласия хи-квадрат"""
+        n = len(sample)
+        k = int(1 + 3.3 * np.log10(n))  # Правило Старджесса
+
+        # Границы интервалов для N(mu, sigma)
+        percentiles = np.linspace(0, 100, k + 1)[1:-1]
+        boundaries = np.percentile(sample, percentiles)
+        boundaries = np.concatenate([[-np.inf], boundaries, [np.inf]])
+
+        # Наблюдаемые частоты
+        observed, _ = np.histogram(sample, boundaries)
+
+        # Теоретические вероятности
+        cdf = stats.norm(loc=mu, scale=sigma).cdf
+        prob = np.diff(cdf(boundaries))
+        expected = prob * n
+
+        # Статистика хи-квадрат
+        chi2 = np.sum((observed - expected) ** 2 / expected)
+        critical = stats.chi2.ppf(1 - self.alpha, k - 3)  # k-3 для N(mu,sigma)
+
+        return chi2, critical, observed, prob, expected, boundaries
+
+    def generate_latex_table(self, n, chi2, observed, prob, expected, boundaries,
+                             mu, sigma):
+        """Генерация LaTeX таблицы с результатами"""
+        latex = []
+        latex.append("\\begin{table}[H]")
+        latex.append("\\centering")
+        latex.append("\\begin{tabular}{|c|c|c|c|c|c|c|}")
+        latex.append("\\hline")
+        latex.append(
+            "$i$ & Границы интервалов & $n_i$ & $p_i$ & $np_i$ & $n_i - np_i$ & $\\frac{(n_i - np_i)^2}{np_i}$ \\\\")
+        latex.append("\\hline")
+
+        for i in range(len(observed)):
+            left = "-\\infty" if boundaries[i] == -np.inf else f"{boundaries[i]:.2f}"
+            right = "\\infty" if boundaries[i + 1] == np.inf else f"{boundaries[i + 1]:.2f}"
+
+            diff = observed[i] - expected[i]
+            chi_component = diff ** 2 / expected[i]
+
+            row = [
+                str(i + 1),
+                f"$[{left}, {right}]$",
+                str(observed[i]),
+                f"{prob[i]:.3f}",
+                f"{expected[i]:.1f}",
+                f"{diff:.1f}",
+                f"{chi_component:.2f}"
+            ]
+            latex.append(" & ".join(row) + " \\\\")
+            latex.append("\\hline")
+
+        latex.append("\\end{tabular}")
+        latex.append(
+            f"\\caption{{Таблица для $n = {n}$, $\\mu = {mu:.2f}$, $\\sigma = {sigma:.1f}$}}")
+        latex.append("\\end{table}")
+
+        return "\n".join(latex)
+
+    def run_tests(self):
+        """Основная функция выполнения тестов"""
+        sample_size = [20, 100]
+        for n in sample_size:
+            # Нормальное распределение
+            print(f"\n% Нормальное распределение n={n}")
+            sample_normal = self.generate_sample(n)
+            mu, sigma = self.estimate_parameters(sample_normal)
+
+            chi2, critical, observed, prob, expected, boundaries = self.chi2_test(
+                sample_normal, mu, sigma
+            )
+
+            print(self.generate_latex_table(
+                n, chi2, observed, prob, expected, boundaries, mu, sigma
+            ))
+            print(f"% χ² наблюдаемое = {chi2:.1f}, критическое = {critical:.1f}")
+            print(f"% Гипотеза {'принимается' if chi2 < critical else 'отвергается'}\n")
+
+            # Равномерное распределение
+            print(f"\n% Равномерное распределение n={n}")
+            sample_uniform = self.generate_sample(n, 'uniform')
+            mu_unif, sigma_unif = self.estimate_parameters(sample_uniform)
+
+            chi2_unif, critical_unif, observed_unif, prob_unif, expected_unif, boundaries_unif = self.chi2_test(
+                sample_uniform, mu_unif, sigma_unif
+            )
+
+            print(self.generate_latex_table(
+                n, chi2_unif, observed_unif, prob_unif, expected_unif, boundaries_unif,  mu, sigma
+            ))
+            print(f"% χ² наблюдаемое = {chi2_unif:.1f}, критическое = {critical_unif:.1f}")
+            print(f"% Гипотеза {'принимается' if chi2_unif < critical_unif else 'отвергается'}\n")
 
 
-def chi2_normality_test(sample, alpha=0.05):
-    n = len(sample)
-    mu, sigma = estimate_mle_normal(sample)
-    dist = norm(loc=mu, scale=sigma)
-
-    # Фиксированное количество интервалов
-    k = 6
-
-    # Создаем интервалы так, чтобы каждый содержал не менее 5 наблюдений
-    # Начинаем с равных вероятностных интервалов
-    probs = np.linspace(0, 1, k + 1)
-    bins = dist.ppf(probs)
-
-    # Наблюдаемые частоты
-    observed, _ = np.histogram(sample, bins=bins)
-
-    # Если есть интервалы с малым числом наблюдений, объединяем с соседними
-    i = 0
-    while i < len(observed):
-        if observed[i] < 5:
-            if i == len(observed) - 1 and i > 0:
-                # Объединяем с предыдущим интервалом
-                observed[i - 1] += observed[i]
-                observed = np.delete(observed, i)
-                bins = np.delete(bins, i)
-            elif i < len(observed) - 1:
-                # Объединяем со следующим интервалом
-                observed[i] += observed[i + 1]
-                observed = np.delete(observed, i + 1)
-                bins = np.delete(bins, i + 1)
-            else:
-                i += 1
-        else:
-            i += 1
-
-    # Пересчитываем ожидаемые частоты для новых интервалов
-    expected_probs = np.diff(dist.cdf(bins))
-    expected = n * expected_probs
-
-    # Гарантируем, что df >= 1
-    if len(expected) < 3:  # Если осталось меньше 3 интервалов
-        # Используем минимальное возможное разбиение (2 интервала)
-        bins = np.array([-np.inf, mu, np.inf])
-        observed, _ = np.histogram(sample, bins=bins)
-        expected_probs = np.diff(dist.cdf(bins))
-        expected = n * expected_probs
-
-    # Вычисляем статистику хи-квадрат
-    chi2_stat = np.sum((observed - expected) ** 2 / expected)
-    df = len(expected) - 1 - 2  # степени свободы
-
-    # Получаем критическое значение из таблицы
-    critical_value = chi2_table.get(df, chi2_table[max(chi2_table.keys())])
-
-    p_value = 1 - stats.chi2.cdf(chi2_stat, df) if df > 0 else np.nan
-
-    table = pd.DataFrame({
-        'Интервал': [f'({bins[i]:.2f}, {bins[i + 1]:.2f}]' for i in range(len(bins) - 1)],
-        'Наблюдаемая частота': observed,
-        'Ожидаемая частота': expected,
-        '(O-E)²/E': (observed - expected) ** 2 / expected
-    })
-
-    return table, chi2_stat, critical_value, p_value, mu, sigma
-
-
-def print_latex_tables(results):
-    for name, res in results.items():
-        print(f"\n\\subsection{{Результаты для выборки: {name}}}")
-        print(f"Оценки ММП параметров нормального распределения:")
-        print(f"$\\hat{{\\mu}} = {res['μ (ММП)']:.3f}$, $\\hat{{\\sigma}} = {res['σ (ММП)']:.3f}$")
-
-        print("\\begin{table}[H]")
-        print("\\centering")
-        print("\\begin{tabular}{|c|c|c|c|}")
-        print("\\hline")
-        print("Интервал & Наблюдаемая частота & Ожидаемая частота & $(O-E)^2/E$ \\\\")
-        print("\\hline")
-
-        for _, row in res['Таблица'].iterrows():
-            print(
-                f"{row['Интервал']} & {int(row['Наблюдаемая частота'])} & {row['Ожидаемая частота']:.1f} & {row['(O-E)²/E']:.3f} \\\\")
-
-        print("\\hline")
-        print("\\end{tabular}")
-        print(f"\\caption{{Таблица частот для проверки нормальности выборки ({name})}}")
-        print("\\end{table}")
-
-        print(f"Статистика $\\chi^2$: {res['χ² статистика']:.3f} \\\\")
-        print(f"Критическое значение: {res['Критическое значение']:.3f} \\\\")
-        print(f"Вывод: {res['Вывод']}")
-
+if __name__ == "__main__":
+    tester = NormalDistributionTest()
+    tester.run_tests()
